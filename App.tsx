@@ -20,12 +20,20 @@ import {
     POINTS_PER_BRICK
 } from './constants';
 
+// Key for storing the shared AI data in localStorage.
 const AI_DATA_KEY = 'arkanoidAIStrategyData';
 
+/**
+ * Retrieves the shared AI performance data from localStorage.
+ * This data represents the "collective knowledge" of all agents over time.
+ * If no data is found, it returns a default initial state.
+ * @returns {AIStrategyData} The shared data for the AI collective.
+ */
 const getSharedAIData = (): AIStrategyData => {
     try {
         const data = localStorage.getItem(AI_DATA_KEY);
         const parsed = data ? JSON.parse(data) : {};
+        // Ensures all properties are present, preventing errors from old data formats.
         return {
             gamesPlayed: parsed.gamesPlayed || 0,
             gamesWon: parsed.gamesWon || 0,
@@ -40,6 +48,10 @@ const getSharedAIData = (): AIStrategyData => {
     }
 };
 
+/**
+ * Saves the shared AI performance data to localStorage.
+ * @param {AIStrategyData} aiData The data to save.
+ */
 const saveSharedAIData = (aiData: AIStrategyData) => {
     try {
         localStorage.setItem(AI_DATA_KEY, JSON.stringify(aiData));
@@ -48,26 +60,40 @@ const saveSharedAIData = (aiData: AIStrategyData) => {
     }
 };
 
+/**
+ * The main application component, acting as "Mission Control".
+ * It manages the state of all parallel game instances, handles the AI learning logic,
+ * and displays the overall simulation dashboard.
+ */
 const App: React.FC = () => {
+    // State for all the individual AI agent instances.
     const [gameInstances, setGameInstances] = useState<GameInstance[]>([]);
+    // State for the shared, collective AI data.
     const [sharedAIData, setSharedAIData] = useState<AIStrategyData>(getSharedAIData);
 
+    /**
+     * Decides the next opening strategy for an agent.
+     * Currently, it's a simple random selection from available columns.
+     */
     const decideNextStrategy = useCallback((): number => {
         return Math.floor(Math.random() * BRICK_COLUMN_COUNT);
     }, []);
 
+    /**
+     * Creates the initial set of AI agents/game instances.
+     */
     const initializeInstances = useCallback(() => {
         const initialInstances: GameInstance[] = [];
         for (let i = 0; i < SIMULATION_GAME_COUNT; i++) {
             initialInstances.push({
                 id: i,
-                key: Date.now() + i,
+                key: Date.now() + i, // Unique key to force React to re-mount the Game component on reset.
                 initialLives: INITIAL_LIVES,
                 strategy: decideNextStrategy(),
                 gamesPlayed: 0,
                 gamesWon: 0,
                 skillLevel: INITIAL_SKILL_LEVEL,
-                careerProductivity: 50,
+                careerProductivity: 50, // Start at a neutral 50%
                 totalProductiveHits: 0,
                 totalNonProductiveHits: 0,
                 totalWinTime: 0,
@@ -76,21 +102,33 @@ const App: React.FC = () => {
         setGameInstances(initialInstances);
     }, [decideNextStrategy]);
 
+    // Initialize instances when the component mounts.
     useEffect(() => {
         initializeInstances();
     }, [initializeInstances]);
     
+    /**
+     * Memoized calculation to rank all agents based on their performance.
+     * The primary ranking metric is "efficiency" (wins per second of play time).
+     */
     const rankedInstances = useMemo(() => {
         const instancesWithPerf = gameInstances.map(inst => {
             const averageWinTime = inst.gamesWon > 0 ? inst.totalWinTime / inst.gamesWon : 0;
+            // Efficiency calculation rewards both speed and victory.
             const efficiency = (inst.gamesWon > 1 && inst.totalWinTime > 0) 
                 ? (inst.gamesWon / inst.totalWinTime) 
                 : 0;
             return { ...inst, averageWinTime, efficiency };
         });
+        // Sort descending by efficiency.
         return instancesWithPerf.sort((a, b) => b.efficiency - a.efficiency);
     }, [gameInstances]);
 
+    /**
+     * Callback function triggered when any game instance finishes.
+     * This is the core of the learning loop. It updates both the shared AI data
+     * and the specific agent's individual stats and skill level.
+     */
     const handleGameEnd = useCallback((
         instanceId: number,
         result: 'win' | 'loss',
@@ -103,6 +141,7 @@ const App: React.FC = () => {
         nonProductiveHits: number,
         jackpotsHit: number,
     ) => {
+        // --- Step 1: Update the shared "collective knowledge" ---
         setSharedAIData(prevData => {
             const newData = { ...prevData };
             newData.gamesPlayed++;
@@ -114,10 +153,12 @@ const App: React.FC = () => {
                 newData.gamesWon++;
             }
             
-            const effectiveTime = result === 'win' ? time : time + LOSS_PENALTY_SECONDS;
+            // Update performance stats for the specific opening strategy used.
+            const effectiveTime = result === 'win' ? time : time + LOSS_PENALTY_SECONDS; // Penalize losses
             const oldStats = newData.strategyPerformance[strategy] || { avgTime: 0, plays: 0, wins: 0 };
             const newPlays = oldStats.plays + 1;
             const newWins = result === 'win' ? oldStats.wins + 1 : oldStats.wins;
+            // Update average time using a rolling average formula.
             const newAvgTime = oldStats.avgTime + (effectiveTime - oldStats.avgTime) / newPlays;
             newData.strategyPerformance[strategy] = {
                 avgTime: newAvgTime,
@@ -129,12 +170,14 @@ const App: React.FC = () => {
             return newData;
         });
         
+        // --- Step 2: Update the individual agent's stats and "evolve" it ---
         setGameInstances(prevInstances => {
             const champ = rankedInstances.length > 0 ? rankedInstances[0] : null;
             const championSkill = champ ? champ.skillLevel : INITIAL_SKILL_LEVEL;
 
             return prevInstances.map(instance => {
                 if (instance.id === instanceId) {
+                    // Carry over lives if the agent won.
                     let nextInitialLives = INITIAL_LIVES; 
                     if (result === 'win') {
                         nextInitialLives = Math.min(INITIAL_LIVES + 1, remainingLives + 1);
@@ -143,34 +186,42 @@ const App: React.FC = () => {
                     const newGamesWon = result === 'win' ? instance.gamesWon + 1 : instance.gamesWon;
                     const newTotalWinTime = result === 'win' ? instance.totalWinTime + time : instance.totalWinTime;
                     
+                    // Update career productivity.
                     const newTotalP = instance.totalProductiveHits + productiveHits;
                     const newTotalNP = instance.totalNonProductiveHits + nonProductiveHits;
                     const totalHits = newTotalP + newTotalNP;
                     const newCareerProductivity = totalHits > 0 ? (newTotalP / totalHits) * 100 : 50;
 
+                    // Update skill level based on performance.
                     let newSkill = instance.skillLevel;
                     if (result === 'win') {
+                        // Winning with high productivity gives a bigger skill boost.
                         const productivityBonus = isNaN(gameProductivity) ? 0.5 : gameProductivity / 100;
                         newSkill += SKILL_INCREASE_ON_WIN * productivityBonus;
                     } else {
+                        // Losing with low productivity is punished more heavily.
                         const safeProductivity = isNaN(gameProductivity) ? 0 : gameProductivity;
                         const productivityPenalty = (1 - safeProductivity / 100);
                         newSkill -= SKILL_DECREASE_ON_LOSS * (1 + productivityPenalty);
                     }
 
+                    // --- Skill Inheritance Logic ---
+                    // Give underperforming agents a chance to learn from the best.
                     let inheritanceChance = SKILL_INHERITANCE_CHANCE;
                     if (newCareerProductivity < CAREER_PRODUCTIVITY_INHERITANCE_THRESHOLD) {
-                        inheritanceChance *= SKILL_INHERITANCE_CHANCE_BOOST_FACTOR;
+                        inheritanceChance *= SKILL_INHERITANCE_CHANCE_BOOST_FACTOR; // Boost chance if struggling
                     }
                     if (Math.random() < inheritanceChance && championSkill > newSkill && champ && instance.id !== champ.id) {
-                        newSkill = championSkill;
+                        newSkill = championSkill; // Inherit the champion's skill level.
                     }
 
+                    // Clamp skill level within min/max bounds.
                     newSkill = Math.max(MIN_SKILL_LEVEL, Math.min(MAX_SKILL_LEVEL, newSkill));
 
+                    // Return the updated agent state, ready for its next game.
                     return {
                         ...instance,
-                        key: Date.now() + instance.id,
+                        key: Date.now() + instance.id, // New key to trigger a re-mount.
                         initialLives: nextInitialLives,
                         strategy: decideNextStrategy(),
                         gamesPlayed: instance.gamesPlayed + 1,
@@ -188,6 +239,9 @@ const App: React.FC = () => {
 
     }, [decideNextStrategy, rankedInstances]);
 
+    /**
+     * A small component to render a circular progress bar, used for displaying career productivity.
+     */
     const RadialProgress = ({ percentage, color }: { percentage: number; color: string }) => {
         const radius = 38;
         const stroke = 5;
@@ -231,18 +285,22 @@ const App: React.FC = () => {
             <p className="mb-6 text-zinc-400">An AI collective learning in parallel to master the game.</p>
             
             <div className="w-full max-w-[1250px] flex flex-col items-center gap-6">
+                {/* Render a card for each agent, sorted by rank. */}
                 {rankedInstances.map((instance, index) => {
                     const rank = index + 1;
                     const isChampion = rank === 1;
+                    // Calculate skill as a percentage for the progress bar.
                     const skillPercentage = ((instance.skillLevel - MIN_SKILL_LEVEL) / (MAX_SKILL_LEVEL - MIN_SKILL_LEVEL)) * 100;
 
                     return (
                         <div key={instance.key} className={`w-full max-w-4xl p-4 rounded-lg flex gap-4 items-center transition-all duration-500 ${isChampion ? 'bg-yellow-500/10' : 'bg-zinc-800/50'}`} style={{borderColor: isChampion ? '#facc15' : '#3f3f46', borderWidth: '1px'}}>
+                           {/* Rank and Champion Status */}
                            <div className="flex flex-col items-center justify-center w-24">
                                 <span className={`text-4xl font-bold ${isChampion ? 'text-yellow-300' : 'text-zinc-500'}`}>#{rank}</span>
                                 {isChampion && <span className="text-sm text-yellow-400">🏆 CHAMPION</span>}
                            </div>
 
+                           {/* The Game Component itself */}
                            <Game
                                 instanceId={instance.id}
                                 initialLives={instance.initialLives}
@@ -261,6 +319,7 @@ const App: React.FC = () => {
                                 className="w-[400px] h-[300px] rounded-md"
                             />
                             
+                            {/* Performance Stats Panel */}
                             <div className="flex-1 flex flex-col justify-between h-[300px] p-2">
                                 <div>
                                     <h3 className={`text-lg font-bold ${isChampion ? 'text-yellow-300' : 'text-white'}`}>

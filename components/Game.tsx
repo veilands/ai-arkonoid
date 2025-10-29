@@ -105,16 +105,26 @@ interface SimulatedPath {
     requiredPaddleCenter: number;
 }
 
+/**
+ * The core Game component. It encapsulates the entire game logic, rendering,
+ * and AI decision-making for a single instance of Arkanoid.
+ * It's a self-contained simulation that reports its results back to the App component.
+ */
 const Game: React.FC<GameProps> = ({ 
     instanceId, initialStrategy, onGameEnd, initialLives, initialSkillLevel, 
     careerProductivity, isActive = false, isAIEnabled, gamesPlayed, rank, 
     totalInstances, sharedAIData, efficiency, averageWinTime, className 
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // State flags for triggering win/loss animations or logic.
   const [isWinning, setIsWinning] = useState(false);
   const [isLosing, setIsLosing] = useState(false);
 
 
+  // --- Core Game State Refs ---
+  // Using refs is crucial here for performance. It allows us to mutate these values
+  // within the requestAnimationFrame loop without causing React to re-render the
+  // entire component on every frame.
   const ballRef = useRef<Ball>({
     x: CANVAS_WIDTH / 2,
     y: CANVAS_HEIGHT - PADDLE_Y_OFFSET - PADDLE_HEIGHT - BALL_RADIUS,
@@ -131,37 +141,42 @@ const Game: React.FC<GameProps> = ({
     height: PADDLE_HEIGHT,
   });
   
-  const prevPaddleXRef = useRef((CANVAS_WIDTH - PADDLE_WIDTH) / 2);
+  const prevPaddleXRef = useRef((CANVAS_WIDTH - PADDLE_WIDTH) / 2); // For calculating paddle velocity
   const paddleVelocityRef = useRef(0);
 
   const bricksRef = useRef<Brick[][]>([]);
   const scoreRef = useRef(0);
   const livesRef = useRef(initialLives);
-  const isPowerShotModeRef = useRef(false);
+  const isPowerShotModeRef = useRef(false); // AI flag for an aggressive shot
   
+  // --- Visual Effects State Refs ---
   const particlesRef = useRef<Particle[]>([]);
   const ballTrailRef = useRef<{ x: number, y: number }[]>([]);
   const paddleTrailRef = useRef<{ x: number, width: number }[]>([]);
   const screenShakeRef = useRef({ intensity: 0, duration: 0 });
-  const flashFrameCounterRef = useRef(0);
-  const flickShotEffectRef = useRef(0);
+  const flashFrameCounterRef = useRef(0); // For wall impact flash
+  const flickShotEffectRef = useRef(0); // Timer for flick shot visual
   const floatingTextsRef = useRef<FloatingText[]>([]);
   const finisherShotPathRef = useRef<{from: {x: number, y: number}, to: {x: number, y: number}} | null>(null);
   const starsRef = useRef<Star[]>([]);
 
+  // --- AI & Game Logic State Refs ---
   const frameCounterRef = useRef(0);
-  const lastBrickBreakFrameRef = useRef(0);
+  const lastBrickBreakFrameRef = useRef(0); // For detecting if the ball is stuck
   const gameStartTimeRef = useRef<number>(0);
-  const ballPositionHistoryRef = useRef<{ x: number, y: number }[]>([]);
-  const recoveringFromStuckCounterRef = useRef(0);
+  const ballPositionHistoryRef = useRef<{ x: number, y: number }[]>([]); // For loop detection
+  const recoveringFromStuckCounterRef = useRef(0); // Cooldown timer after breaking a loop
   const isStuckRef = useRef(false);
-  const productiveHitsRef = useRef(0);
-  const nonProductiveHitsRef = useRef(0);
-  const dynamicAggressionFactorRef = useRef(1.0);
-  const currentTargetBrickRef = useRef<Brick | null>(null);
-  const strategicPlanRef = useRef<{ paths: SimulatedPath[], bestPathIndex: number } | null>(null);
+  const productiveHitsRef = useRef(0); // Hits that break a brick
+  const nonProductiveHitsRef = useRef(0); // Hits against walls/ceiling
+  const dynamicAggressionFactorRef = useRef(1.0); // The AI's "confidence" metric
+  const currentTargetBrickRef = useRef<Brick | null>(null); // The brick the AI is currently aiming for
+  const strategicPlanRef = useRef<{ paths: SimulatedPath[], bestPathIndex: number } | null>(null); // Stores results of AI shot simulations
   const jackpotsThisGameRef = useRef(0);
   
+  /**
+   * Initializes the starfield background.
+   */
   const createStars = useCallback(() => {
     const newStars: Star[] = [];
     for (let i = 0; i < STAR_COUNT; i++) {
@@ -176,6 +191,10 @@ const Game: React.FC<GameProps> = ({
     starsRef.current = newStars;
   }, []);
 
+  /**
+   * Creates the brick layout for a new game.
+   * It selects a random layout and designates one random brick as "golden".
+   */
   const createBricks = useCallback(() => {
     const layout = LEVEL_LAYOUTS[Math.floor(Math.random() * LEVEL_LAYOUTS.length)];
     const newBricks: Brick[][] = [];
@@ -201,6 +220,10 @@ const Game: React.FC<GameProps> = ({
     bricksRef.current = newBricks;
   }, []);
   
+  /**
+   * Resets the ball and paddle to their starting positions.
+   * Called when a life is lost or a new game starts.
+   */
   const resetBallAndPaddle = useCallback(() => {
     ballRef.current.x = CANVAS_WIDTH / 2;
     ballRef.current.y = CANVAS_HEIGHT - PADDLE_Y_OFFSET - PADDLE_HEIGHT - BALL_RADIUS;
@@ -213,6 +236,10 @@ const Game: React.FC<GameProps> = ({
     paddleTrailRef.current = [];
   }, []);
 
+  /**
+   * Spawns a particle explosion at a given location.
+   * Used for brick breaks and other effects.
+   */
   const createParticleExplosion = (x: number, y: number, color: string, count: number, speed: number) => {
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
@@ -230,6 +257,9 @@ const Game: React.FC<GameProps> = ({
     }
   };
   
+  /**
+   * Triggers all visual effects associated with a brick breaking.
+   */
   const triggerBrickBreakEffects = (brick: Brick) => {
     const color = brick.isGolden ? GOLDEN_BRICK_COLOR : BRICK_COLORS[Math.floor(brick.y / (BRICK_HEIGHT + BRICK_PADDING)) % BRICK_COLORS.length];
     createParticleExplosion(brick.x + BRICK_WIDTH / 2, brick.y + BRICK_HEIGHT / 2, color, PARTICLE_COUNT / (brick.isGolden ? 0.5 : 2), PARTICLE_SPEED * (brick.isGolden ? 1.5 : 1));
@@ -237,6 +267,9 @@ const Game: React.FC<GameProps> = ({
     flashFrameCounterRef.current = IMPACT_FLASH_DURATION;
   };
   
+  /**
+   * Triggers the visual flair for a successful "flick shot" at the paddle's edge.
+   */
   const triggerFlickShotEffect = (x: number, y: number, direction: number) => {
       flickShotEffectRef.current = 10;
       for (let i = 0; i < 10; i++) {
@@ -255,6 +288,10 @@ const Game: React.FC<GameProps> = ({
   };
 
 
+  // --- Drawing Functions ---
+  // These functions are called every frame to render game objects onto the canvas.
+
+  /** Draws the ball, its trail, and any special glow effects. */
   const drawBall = (ctx: CanvasRenderingContext2D) => {
     const isFlicking = flickShotEffectRef.current > 0;
     const isStuck = isStuckRef.current;
@@ -288,6 +325,7 @@ const Game: React.FC<GameProps> = ({
     ctx.shadowBlur = 0;
   };
 
+  /** Draws the paddle and its motion trail. */
   const drawPaddle = (ctx: CanvasRenderingContext2D) => {
     paddleTrailRef.current.forEach((pos, index) => {
       const opacity = (index / paddleTrailRef.current.length) * PADDLE_TRAIL_OPACITY;
@@ -315,6 +353,7 @@ const Game: React.FC<GameProps> = ({
     ctx.shadowBlur = 0;
   };
 
+  /** Draws all the bricks, applying special glows for golden, targeted, or last remaining bricks. */
   const drawBricks = (ctx: CanvasRenderingContext2D) => {
     const remainingBricks = bricksRef.current.flat().filter(b => b.status === 1);
     const isEndGame = remainingBricks.length > 0 && remainingBricks.length <= AI_END_GAME_BRICK_COUNT;
@@ -353,6 +392,7 @@ const Game: React.FC<GameProps> = ({
     }
   };
 
+  /** Draws and updates all active particles. */
   const drawParticles = (ctx: CanvasRenderingContext2D) => {
     particlesRef.current.forEach((p, index) => {
         p.x += p.dx;
@@ -376,6 +416,7 @@ const Game: React.FC<GameProps> = ({
     });
   };
 
+  /** Draws and updates all floating text elements. */
   const drawFloatingTexts = (ctx: CanvasRenderingContext2D) => {
     floatingTextsRef.current.forEach((ft, index) => {
         ft.y -= FLOATING_TEXT_SPEED;
@@ -404,6 +445,7 @@ const Game: React.FC<GameProps> = ({
     });
   };
   
+  /** Draws and updates the parallax starfield background. */
   const drawStars = (ctx: CanvasRenderingContext2D) => {
     starsRef.current.forEach(star => {
         star.y += star.speed;
@@ -418,11 +460,16 @@ const Game: React.FC<GameProps> = ({
     });
   };
 
+  /** Calculates the productivity for the current game. */
   const getProductivity = () => {
     const totalHits = productiveHitsRef.current + nonProductiveHitsRef.current;
     return totalHits > 0 ? (productiveHitsRef.current / totalHits) * 100 : 0;
   }
   
+  /**
+   * Handles the outcome of hitting the special Golden Brick.
+   * It runs a "roulette" to determine if the result is a Jackpot, Power Ball, or Dud.
+   */
   const handleGoldenBrick = (brick: Brick) => {
     const rand = Math.random();
     let outcome: 'JACKPOT' | 'POWER_BALL' | 'DUD' = 'DUD';
@@ -463,6 +510,11 @@ const Game: React.FC<GameProps> = ({
     }
   };
 
+  /**
+   * The core physics and collision detection logic.
+   * This function checks for collisions between the ball and bricks, walls, and the paddle.
+   * It also handles win/loss conditions.
+   */
   const collisionDetection = useCallback(() => {
     const ball = ballRef.current;
     
@@ -562,6 +614,12 @@ const Game: React.FC<GameProps> = ({
     }
   }, [onGameEnd, resetBallAndPaddle, instanceId, initialStrategy, isWinning, initialSkillLevel]);
 
+  // --- AI Logic Functions ---
+
+  /**
+   * AI helper to identify the "best" non-golden brick to target.
+   * "Best" is determined by a heuristic that prioritizes isolated or strategically important bricks.
+   */
   const findBestTargetBrick = useCallback(() => {
     const remainingBricks = bricksRef.current.flat().filter(b => b.status === 1 && !b.isGolden);
     if (remainingBricks.length === 0) return null;
@@ -586,6 +644,11 @@ const Game: React.FC<GameProps> = ({
     return bestBrick;
   }, []);
 
+  /**
+   * AI helper for calculating the purely defensive paddle position.
+   * It projects the ball's path to the paddle line, accounting for wall bounces,
+   * to determine where to intercept it.
+   */
   const getDefensiveTargetX = useCallback(() => {
       const ball = ballRef.current;
       const paddleY = CANVAS_HEIGHT - PADDLE_Y_OFFSET - PADDLE_HEIGHT;
@@ -609,6 +672,10 @@ const Game: React.FC<GameProps> = ({
       return simX;
   }, []);
 
+  /**
+   * Simulates a single potential ball trajectory from the paddle.
+   * @returns The simulated path, a list of bricks it would hit, and the resulting score.
+   */
   const projectTrajectory = useCallback((startX: number, startY: number, startDX: number, startDY: number, bricks: Brick[][], depth: number): { path: {x:number, y:number}[], hits: Brick[], score: number } => {
       let path = [{ x: startX, y: startY }];
       let hits: Brick[] = [];
@@ -634,6 +701,11 @@ const Game: React.FC<GameProps> = ({
       return { path, hits, score: hits.length };
   }, []);
 
+  /**
+   * The AI's main strategic planning function.
+   * It runs multiple `projectTrajectory` simulations at different angles
+   * to find the shot that will break the most bricks.
+   */
   const runShotSimulations = useCallback(() => {
     const ball = ballRef.current;
     const paddle = paddleRef.current;
@@ -661,6 +733,10 @@ const Game: React.FC<GameProps> = ({
   }, [projectTrajectory]);
 
 
+  /**
+   * The main drawing and game loop function, called by requestAnimationFrame.
+   * It orchestrates all drawing, updates game state, and runs the AI logic for each frame.
+   */
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !isActive) return;
@@ -704,23 +780,34 @@ const Game: React.FC<GameProps> = ({
     const remainingBricks = bricksRef.current.flat().filter(b => b.status === 1);
     const isEndGame = remainingBricks.length > 0 && remainingBricks.length <= AI_END_GAME_BRICK_COUNT;
     
+    // --- Agent Psychological State Determination ---
+    // Determines the agent's current "mood" or state based on game conditions.
+    // This state influences its decision-making logic (e.g., risk-taking).
     let agentMode: 'normal' | 'grit' | 'clutch' | 'finisher' = 'normal';
     if (isEndGame) agentMode = 'finisher';
     else if (livesRef.current === 1) agentMode = 'clutch';
     else if (livesRef.current > 2 && getProductivity() < 40 && frameCounterRef.current > 180) agentMode = 'grit';
 
+    // --- Main AI Decision-Making Block ---
     if (isAIEnabled) {
       const isRecovering = recoveringFromStuckCounterRef.current > 0;
       strategicPlanRef.current = null;
+
+      // Step 1: Strategic Planning (if conditions are right)
       if (ball.dy < 0 && ball.y < AI_STRATEGIC_PLANNING_THRESHOLD_Y && !isRecovering && !isStuckRef.current) runShotSimulations();
+      
+      // Step 2: Calculate Defensive Target
       const defensiveTargetX = getDefensiveTargetX();
       let offensiveTargetX: number | null = null;
       currentTargetBrickRef.current = null;
+      
+      // Step 3: Identify High-Value Offensive Targets (Golden Brick, Finisher Shots)
       const goldenBrick = bricksRef.current.flat().find(b => b.isGolden && b.status === 1);
       let wantsToGamble = false;
+      // The agent's willingness to gamble for the golden brick depends on its rank and confidence.
       if (goldenBrick && livesRef.current > 1) {
-          if (rank === totalInstances && totalInstances > 1) wantsToGamble = true;
-          else if (rank === 1 && totalInstances > 1) wantsToGamble = false;
+          if (rank === totalInstances && totalInstances > 1) wantsToGamble = true; // Underdog's desperation
+          else if (rank === 1 && totalInstances > 1) wantsToGamble = false; // Champion's caution
           else if (dynamicAggressionFactorRef.current > 1.2) wantsToGamble = true;
       }
       if (wantsToGamble && goldenBrick) {
@@ -735,11 +822,16 @@ const Game: React.FC<GameProps> = ({
             offensiveTargetX = targetPaddleCenter;
           }
       }
+
+      // If not gambling, check for other strategic opportunities.
       if (offensiveTargetX === null) {
         const bestPlan = strategicPlanRef.current?.paths[strategicPlanRef.current.bestPathIndex];
-        if (bestPlan && bestPlan.score > 1) offensiveTargetX = bestPlan.requiredPaddleCenter;
+        if (bestPlan && bestPlan.score > 1) {
+            offensiveTargetX = bestPlan.requiredPaddleCenter; // Execute the best simulated shot
+        }
         else if (!isRecovering && !strategicPlanRef.current) {
           finisherShotPathRef.current = null;
+          // In the end-game, calculate a direct "finisher" shot.
           if (isEndGame) {
             const targetBrick = remainingBricks.reduce((lowest, current) => current.y > lowest.y ? current : lowest, remainingBricks[0]);
             currentTargetBrickRef.current = targetBrick;
@@ -756,6 +848,7 @@ const Game: React.FC<GameProps> = ({
             }
           }
         }
+        // If no other plans, find the next-best regular brick to target.
         if (offensiveTargetX === null && !isRecovering && !strategicPlanRef.current) {
           const bestTarget = findBestTargetBrick();
           if (bestTarget) {
@@ -770,7 +863,9 @@ const Game: React.FC<GameProps> = ({
           }
         }
       }
-      let finalTargetX = defensiveTargetX;
+
+      // Step 4: Weigh Options and Set Final Target
+      let finalTargetX = defensiveTargetX; // Default to a safe, defensive position
       isPowerShotModeRef.current = false;
       let useFlickShot = false;
       const safeZone = paddle.width * 0.7; 
@@ -779,25 +874,33 @@ const Game: React.FC<GameProps> = ({
           else { finalTargetX = defensiveTargetX + (paddle.width / 2) - (paddle.width * 0.1); }
           useFlickShot = true;
       }
+      
+      // Determine agent's confidence based on performance and psychological state.
       let decisionConfidence = dynamicAggressionFactorRef.current;
       if (agentMode === 'finisher') decisionConfidence = 2.0;
       else if (agentMode === 'grit') decisionConfidence = 1.5;
       else if (agentMode === 'clutch') decisionConfidence = 0.5;
       if (rank === 1 && totalInstances > 1) decisionConfidence *= 1.1; 
       if (rank === totalInstances && totalInstances > 1) decisionConfidence = Math.max(decisionConfidence, 1.4);
+      
+      // Override logic for special cases like being stuck.
       if (isStuckRef.current && !isRecovering) {
           const flickDirection = Math.sign(CANVAS_WIDTH / 2 - ball.x) || 1;
           finalTargetX = defensiveTargetX - ((paddle.width / 2) * 0.9 * flickDirection);
           useFlickShot = true;
       } else if (!isRecovering && !useFlickShot && offensiveTargetX !== null) {
+        // Decide whether to take the offensive shot based on confidence and risk.
         const requiredPaddleMovement = Math.abs(offensiveTargetX - defensiveTargetX);
         const riskFactor = requiredPaddleMovement / (CANVAS_WIDTH * 0.75);
         if (decisionConfidence > (0.7 + riskFactor)) {
-            finalTargetX = offensiveTargetX;
+            finalTargetX = offensiveTargetX; // Commit to the offensive shot
             const bestPlan = strategicPlanRef.current?.paths[strategicPlanRef.current.bestPathIndex];
             isPowerShotModeRef.current = bestPlan ? bestPlan.score > 2 : true;
         }
       }
+      
+      // Step 5: Execute Paddle Movement
+      // Apply easing and jitter for more natural, less robotic movement.
       let finalEasing = AI_PADDLE_EASING * initialSkillLevel;
       if (agentMode === 'grit' || useFlickShot || agentMode === 'finisher') finalEasing *= 1.5;
       let jitter = 0;
@@ -838,6 +941,8 @@ const Game: React.FC<GameProps> = ({
 
     drawBall(ctx);
 
+    // --- Loop Detection ---
+    // Checks the ball's recent position history to see if it's trapped in a repetitive, non-productive loop.
     ballPositionHistoryRef.current.push({ x: ball.x, y: ball.y });
     if (ballPositionHistoryRef.current.length > AI_LOOP_DETECTION_HISTORY_LENGTH) ballPositionHistoryRef.current.shift();
     const history = ballPositionHistoryRef.current;
@@ -946,6 +1051,7 @@ const Game: React.FC<GameProps> = ({
     ctx.restore();
     ctx.restore();
 
+    // --- Update Ball Position and Check Collisions for Next Frame ---
     if (!isWinning && !isLosing) {
       ballTrailRef.current.push({ x: ballRef.current.x, y: ballRef.current.y });
       if (ballTrailRef.current.length > BALL_TRAIL_LENGTH) ballTrailRef.current.shift();
@@ -953,6 +1059,7 @@ const Game: React.FC<GameProps> = ({
       if (paddleTrailRef.current.length > PADDLE_TRAIL_LENGTH) paddleTrailRef.current.shift();
       ballRef.current.x += ballRef.current.dx;
       ballRef.current.y += ballRef.current.dy;
+      // Apply friction and clamp ball speed
       ballRef.current.dx *= BALL_FRICTION;
       ballRef.current.dy *= BALL_FRICTION;
       const speed = Math.sqrt(ballRef.current.dx**2 + ballRef.current.dy**2);
@@ -970,12 +1077,18 @@ const Game: React.FC<GameProps> = ({
     rank, totalInstances, sharedAIData, efficiency, averageWinTime
   ]);
   
+  /**
+   * useEffect for initializing a new game.
+   * This is triggered when the `isActive` prop becomes true or when the component's `key` changes.
+   * It resets all game state to start a fresh match.
+   */
   useEffect(() => {
     if (!isActive) return;
     
     createBricks();
     createStars();
     resetBallAndPaddle();
+    // Reset all refs and state for a new game
     scoreRef.current = 0;
     livesRef.current = initialLives;
     frameCounterRef.current = 0;
@@ -994,6 +1107,10 @@ const Game: React.FC<GameProps> = ({
     
   }, [isActive, createBricks, resetBallAndPaddle, initialLives, initialStrategy, createStars]);
   
+  /**
+   * useEffect for managing the main game loop via requestAnimationFrame.
+   * It starts the loop when the component is active and cancels it on cleanup.
+   */
   useEffect(() => {
     if (!isActive) return;
     
