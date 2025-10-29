@@ -6,6 +6,8 @@ This project transcends a simple brick-breaker game. It is a parallel training g
 
 Built with React, TypeScript, and the Canvas API.
 
+Check it out on google AI Studio [Watch Arkonoid Game Simulation Online](https://ai.studio/apps/drive/1sAgyzJYTI6KVC3POi2sZBucof2IQMLNG)
+
 ---
 
 ## Core Achievements & Key Concepts
