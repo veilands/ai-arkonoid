@@ -1,0 +1,5 @@
+{
+  "name": "Arkanoid Training Gym",
+  "description": "A classic Arkanoid-style brick-breaking mini-game built with React, TypeScript, and Tailwind CSS. Look how AI plays is =]",
+  "requestFramePermissions": []
+}
